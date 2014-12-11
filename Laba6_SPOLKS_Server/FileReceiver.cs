@@ -15,18 +15,18 @@ namespace Laba6_SPOLKS_Server
     private const int Size = 8192;
     private const int LocalPort = 11000;
     private const int N = 3;
-    private const string SyncMessage = "SYNC";
+    private const int WindowSize = 5;
+    private const string SyncMessage = "S";
 
     private int connectionFlag = 0;
     private int SelectTimeout = 10000000;
 
     private readonly UdpFileClient[] _udpFileReceiver;
     private readonly Dictionary<Socket, FileDetails> _fileDetails;
-
-    private Dictionary<Socket, FileStream> _fileStream;
-    private IPEndPoint _remoteIpEndPoint = null;
-    private EndPoint _remoteEndPoint;
     private IList<Socket> _socket;
+    private Dictionary<Socket, FileStream> _fileStream;
+
+    private IPEndPoint _remoteIpEndPoint = null;
 
     public FileReceiver()
     {
@@ -121,10 +121,10 @@ namespace Laba6_SPOLKS_Server
           {
             i = 0;
           }
-          else
-          {
-            Console.WriteLine("2nd connect!");
-          }
+          //else
+          //{
+          //  Console.WriteLine("2nd connect!");
+          //}
 
           SelectTimeout = 100000;
 
@@ -148,7 +148,7 @@ namespace Laba6_SPOLKS_Server
                 _fileStream[checkReadSocket[i]] = new FileStream(fileName, FileMode.Append, FileAccess.Write);
               }
 
-              for (int j = 0; _fileStream[checkReadSocket[i]].Position < _fileDetails[checkReadSocket[i]].FileLength && j < 5; j++)
+              for (int j = 0; _fileStream[checkReadSocket[i]].Position < _fileDetails[checkReadSocket[i]].FileLength && j < WindowSize; j++)
               {
                 try
                 {
@@ -164,7 +164,7 @@ namespace Laba6_SPOLKS_Server
                 }
                 catch (SocketException e)
                 {
-                  if (e.SocketErrorCode == SocketError.TimedOut && connectionFlag < 3)
+                  if (e.SocketErrorCode == SocketError.TimedOut && connectionFlag < N)
                   {
                     udpClients.Connect(_remoteIpEndPoint);
 
