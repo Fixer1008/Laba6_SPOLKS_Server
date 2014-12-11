@@ -14,7 +14,7 @@ namespace Laba6_SPOLKS_Server
   {
     private const int Size = 8192;
     private const int LocalPort = 11000;
-    private const int N = 3;
+    private const int AvailableClientsAmount = 3;
     private const int WindowSize = 5;
     private const string SyncMessage = "S";
 
@@ -23,27 +23,18 @@ namespace Laba6_SPOLKS_Server
 
     private readonly UdpFileClient[] _udpFileReceiver;
     private readonly Dictionary<Socket, FileDetails> _fileDetails;
+
     private IList<Socket> _socket;
-    private Dictionary<Socket, FileStream> _fileStream;
+    private Dictionary<Socket, FileStream> _fileStreams;
 
     private IPEndPoint _remoteIpEndPoint = null;
 
     public FileReceiver()
     {
-      _fileStream = new Dictionary<Socket, FileStream>();
+      _fileStreams = new Dictionary<Socket, FileStream>();
       _fileDetails = new Dictionary<Socket, FileDetails>();
-      _udpFileReceiver = new UdpFileClient[N];
+      _udpFileReceiver = new UdpFileClient[AvailableClientsAmount];
       _socket = new List<Socket>();
-    }
-
-    void InitializeUdpClients()
-    {
-      for (int i = 0; i < _udpFileReceiver.Length; i++)
-      {
-        _udpFileReceiver[i] = new UdpFileClient(LocalPort + i);
-        _udpFileReceiver[i].Client.ReceiveTimeout = _udpFileReceiver[i].Client.SendTimeout = 10000;
-        _socket.Add(_udpFileReceiver[i].Client);
-      }
     }
 
     public int Receive()
@@ -51,6 +42,16 @@ namespace Laba6_SPOLKS_Server
       InitializeUdpClients();
       var result = ReceiveFileData();
       return result;
+    }
+
+    private void InitializeUdpClients()
+    {
+      for (int i = 0; i < _udpFileReceiver.Length; i++)
+      {
+        _udpFileReceiver[i] = new UdpFileClient(LocalPort + i);
+        _udpFileReceiver[i].Client.ReceiveTimeout = _udpFileReceiver[i].Client.SendTimeout = 10000;
+        _socket.Add(_udpFileReceiver[i].Client);
+      }
     }
 
     private int ReceiveFileDetails(IList<Socket> checkReadSocket)
@@ -99,84 +100,63 @@ namespace Laba6_SPOLKS_Server
     private int ReceiveFileData()
     {
       int filePointer = 0;
-      bool allClientsEndTransmit = false;
 
-      var checkReadSocket = new List<Socket>();
+      var availableToReadSockets = new List<Socket>();
 
       try
       {
-        for (int i = 0; allClientsEndTransmit == false; i++)
+        for (int i = 0; ; i++)
         {
-          checkReadSocket.Clear();
-          checkReadSocket.AddRange(_udpFileReceiver.Select(r => r.Client));
+          availableToReadSockets.Clear();
+          availableToReadSockets.AddRange(_udpFileReceiver.Select(r => r.Client));
 
-          Socket.Select(checkReadSocket, null, null, SelectTimeout);
+          Socket.Select(availableToReadSockets, null, null, SelectTimeout);
 
-          if (checkReadSocket.Any() == false)
+          if (availableToReadSockets.Any() == false)
           {
             return -1;
           }
 
-          if (checkReadSocket.Count == 1 || checkReadSocket.Count == N)
+          if (availableToReadSockets.Count == 1 || availableToReadSockets.Count == AvailableClientsAmount)
           {
             i = 0;
           }
-          //else
-          //{
-          //  Console.WriteLine("2nd connect!");
-          //}
 
           SelectTimeout = 100000;
 
-          ReceiveFileDetails(checkReadSocket);
+          ReceiveFileDetails(availableToReadSockets);
 
-          if (_fileDetails[checkReadSocket[i]].FileLength > 0)
+          if (_fileDetails[availableToReadSockets[i]].FileLength > 0)
           {
-            var udpClients = _udpFileReceiver.First(r => r.Client == checkReadSocket[i]);
+            var udpClient = _udpFileReceiver.First(r => r.Client == availableToReadSockets[i]);
 
-            if (udpClients.ActiveRemoteHost == false)
+            if (udpClient.ActiveRemoteHost == false)
             {
-              udpClients.Connect(_remoteIpEndPoint);
+              udpClient.Connect(_remoteIpEndPoint);
             }
 
-            if (udpClients.ActiveRemoteHost)
+            if (udpClient.ActiveRemoteHost)
             {
-              if (_fileStream.ContainsKey(checkReadSocket[i]) == false)
-              {
-                var dotIndex = _fileDetails[checkReadSocket[i]].FileName.IndexOf('.');
-                var fileName = _fileDetails[checkReadSocket[i]].FileName.Substring(0, dotIndex) + checkReadSocket[i].GetHashCode() + _fileDetails[checkReadSocket[i]].FileName.Substring(dotIndex);
-                _fileStream[checkReadSocket[i]] = new FileStream(fileName, FileMode.Append, FileAccess.Write);
-              }
+              CreateNewFile(availableToReadSockets, i);
 
-              for (int j = 0; _fileStream[checkReadSocket[i]].Position < _fileDetails[checkReadSocket[i]].FileLength && j < WindowSize; j++)
+              for (int j = 0; _fileStreams[availableToReadSockets[i]].Position < _fileDetails[availableToReadSockets[i]].FileLength && j < WindowSize; j++)
               {
                 try
                 {
-                  var fileDataArray = udpClients.Receive(ref _remoteIpEndPoint);
+                  var fileDataArray = udpClient.Receive(ref _remoteIpEndPoint);
 
-                  filePointer += fileDataArray.Length;
-                  Console.Clear();
-                  Console.WriteLine(filePointer);
+                  //filePointer += fileDataArray.Length;
+                  //Console.WriteLine(filePointer);
 
-                  _fileStream[checkReadSocket[i]].Write(fileDataArray, 0, fileDataArray.Length);
-
-                  var sendBytesAmount = udpClients.Send(Encoding.UTF8.GetBytes(SyncMessage), SyncMessage.Length);
+                  ShowGetBytesCount();
+                  _fileStreams[availableToReadSockets[i]].Write(fileDataArray, 0, fileDataArray.Length);
+                  var sendBytesAmount = udpClient.Send(Encoding.UTF8.GetBytes(SyncMessage), SyncMessage.Length);
                 }
                 catch (SocketException e)
                 {
-                  if (e.SocketErrorCode == SocketError.TimedOut && connectionFlag < N)
+                  if (e.SocketErrorCode == SocketError.TimedOut && connectionFlag < AvailableClientsAmount)
                   {
-                    udpClients.Connect(_remoteIpEndPoint);
-
-                    if (udpClients.ActiveRemoteHost)
-                    {
-                      connectionFlag = 0;
-                    }
-                    else
-                    {
-                      connectionFlag++;
-                    }
-
+                    UploadFile(udpClient);
                     continue;
                   }
                   else
@@ -198,7 +178,7 @@ namespace Laba6_SPOLKS_Server
       catch (Exception e)
       {
         Console.WriteLine(e.Message);
-        return -1;
+        return 0;
       }
       finally
       {
@@ -206,6 +186,41 @@ namespace Laba6_SPOLKS_Server
       }
 
       return 0;
+    }
+
+    private void ShowGetBytesCount()
+    {
+      Console.Clear();
+
+      foreach (var file in _fileStreams)
+      {
+        Console.Write("{0}: ", file.Value.Name);
+        Console.WriteLine(file.Value.Position);
+      }
+    }
+
+    private void CreateNewFile(IList<Socket> availableToReadSockets, int i)
+    {
+      if (_fileStreams.ContainsKey(availableToReadSockets[i]) == false)
+      {
+        var dotIndex = _fileDetails[availableToReadSockets[i]].FileName.IndexOf('.');
+        var fileName = _fileDetails[availableToReadSockets[i]].FileName.Substring(0, dotIndex) + availableToReadSockets[i].GetHashCode() + _fileDetails[availableToReadSockets[i]].FileName.Substring(dotIndex);
+        _fileStreams[availableToReadSockets[i]] = new FileStream(fileName, FileMode.Append, FileAccess.Write);
+      }
+    }
+
+    private void UploadFile(UdpFileClient udpClients)
+    {
+      udpClients.Connect(_remoteIpEndPoint);
+
+      if (udpClients.ActiveRemoteHost)
+      {
+        connectionFlag = 0;
+      }
+      else
+      {
+        connectionFlag++;
+      }
     }
 
     private void CloseResources()
@@ -216,7 +231,7 @@ namespace Laba6_SPOLKS_Server
         _udpFileReceiver[i].Close();
       }
 
-      foreach (var stream in _fileStream)
+      foreach (var stream in _fileStreams)
       {
         stream.Value.Close();
         stream.Value.Dispose();

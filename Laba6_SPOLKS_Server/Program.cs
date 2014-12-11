@@ -17,14 +17,14 @@ namespace Laba6_SPOLKS_Server
             FileReceiver fileReceiver = new FileReceiver();
             var result = fileReceiver.Receive();
 
-            if (result == -1)
-            {
-                Console.WriteLine("Error!");
-            }
-            else
-            {
-                Console.WriteLine("Success!");
-            }
+            //if (result == -1)
+            //{
+            //    Console.WriteLine("Error!");
+            //}
+            //else
+            //{
+            //    Console.WriteLine("Success!");
+            //}
 
             Console.ReadLine();
         }
