@@ -19,7 +19,7 @@ namespace Laba6_SPOLKS_Server
     private const string SyncMessage = "S";
 
     private int connectionFlag = 0;
-    private int SelectTimeout = 10000000;
+    private int SelectTimeout = 20000000;
 
     private readonly UdpFileClient[] _udpFileReceiver;
     private readonly Dictionary<Socket, FileDetails> _fileDetails;
@@ -122,8 +122,6 @@ namespace Laba6_SPOLKS_Server
             i = 0;
           }
 
-          SelectTimeout = 100000;
-
           ReceiveFileDetails(availableToReadSockets);
 
           if (_fileDetails[availableToReadSockets[i]].FileLength > 0)
@@ -145,10 +143,8 @@ namespace Laba6_SPOLKS_Server
                 {
                   var fileDataArray = udpClient.Receive(ref _remoteIpEndPoint);
 
-                  //filePointer += fileDataArray.Length;
-                  //Console.WriteLine(filePointer);
-
                   ShowGetBytesCount();
+
                   _fileStreams[availableToReadSockets[i]].Write(fileDataArray, 0, fileDataArray.Length);
                   var sendBytesAmount = udpClient.Send(Encoding.UTF8.GetBytes(SyncMessage), SyncMessage.Length);
                 }
@@ -157,6 +153,7 @@ namespace Laba6_SPOLKS_Server
                   if (e.SocketErrorCode == SocketError.TimedOut && connectionFlag < AvailableClientsAmount)
                   {
                     UploadFile(udpClient);
+                    i = 0;
                     continue;
                   }
                   else
