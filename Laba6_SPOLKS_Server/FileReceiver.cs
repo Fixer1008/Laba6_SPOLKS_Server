@@ -14,84 +14,73 @@ namespace Laba6_SPOLKS_Server
   {
     private const int Size = 8192;
     private const int LocalPort = 11000;
-    private const int AvailableClientsAmount = 3;
-    private const int WindowSize = 5;
     private const string SyncMessage = "S";
+    private const int SelectTimeout = 2000000;
 
     private int connectionFlag = 0;
-    private int SelectTimeout = 20000000;
 
-    private readonly UdpFileClient[] _udpFileReceiver;
-    private readonly Dictionary<Socket, FileDetails> _fileDetails;
+    private Dictionary<IPEndPoint, FileDetails> _fileDetails;
+    private Dictionary<IPEndPoint, FileStream> _fileStreams;
 
-    private IList<Socket> _socket;
-    private Dictionary<Socket, FileStream> _fileStreams;
+    private IList<IPEndPoint> _pointsList;
+    private UdpFileClient _udpFileReceiver;
 
     private IPEndPoint _remoteIpEndPoint = null;
 
     public FileReceiver()
     {
-      _fileStreams = new Dictionary<Socket, FileStream>();
-      _fileDetails = new Dictionary<Socket, FileDetails>();
-      _udpFileReceiver = new UdpFileClient[AvailableClientsAmount];
-      _socket = new List<Socket>();
+      _fileStreams = new Dictionary<IPEndPoint, FileStream>();
+      _fileDetails = new Dictionary<IPEndPoint, FileDetails>();
+      _pointsList = new List<IPEndPoint>();
     }
 
     public int Receive()
     {
-      InitializeUdpClients();
       var result = ReceiveFileData();
       return result;
     }
 
     private void InitializeUdpClients()
     {
-      for (int i = 0; i < _udpFileReceiver.Length; i++)
-      {
-        _udpFileReceiver[i] = new UdpFileClient(LocalPort + i);
-        _udpFileReceiver[i].Client.ReceiveTimeout = _udpFileReceiver[i].Client.SendTimeout = 10000;
-        _socket.Add(_udpFileReceiver[i].Client);
-      }
+      _udpFileReceiver.Client.ReceiveTimeout = _udpFileReceiver.Client.SendTimeout = 10000;
     }
 
-    private int ReceiveFileDetails(IList<Socket> checkReadSocket)
+    private int ReceiveFileDetails()
     {
-      foreach (var socket in checkReadSocket)
+      try
       {
-        if (_fileDetails.ContainsKey(socket) == false)
+        var receivedFileData = _udpFileReceiver.Receive(ref _remoteIpEndPoint);
+
+        if (_fileDetails.ContainsKey(_remoteIpEndPoint) == false)
         {
-          MemoryStream memoryStream = new MemoryStream();
+          _pointsList.Add(_remoteIpEndPoint);
 
-          try
+          using (MemoryStream memoryStream = new MemoryStream())
           {
-            var udpClient = _udpFileReceiver.First(s => s.Client == socket);
-            var receivedFileInfo = udpClient.Receive(ref _remoteIpEndPoint);
-
             XmlSerializer serializer = new XmlSerializer(typeof(FileDetails));
 
-            memoryStream.Write(receivedFileInfo, 0, receivedFileInfo.Length);
+            memoryStream.Write(receivedFileData, 0, receivedFileData.Length);
             memoryStream.Position = 0;
 
             var fileDetails = (FileDetails)serializer.Deserialize(memoryStream);
-            _fileDetails.Add(socket, fileDetails);
+            _fileDetails.Add(_remoteIpEndPoint, fileDetails);
 
             Console.WriteLine(fileDetails.FileName);
             Console.WriteLine(fileDetails.FileLength);
           }
-          catch (Exception e)
-          {
-            for (int i = 0; i < _socket.Count; i++)
-            {
-              _socket[i].Close();
-            }
-
-            memoryStream.Dispose();
-            Console.WriteLine(e.Message);
-            return -1;
-          }
-
-          memoryStream.Dispose();
         }
+        else
+        {
+          _fileStreams[_remoteIpEndPoint].Write(receivedFileData, 0, receivedFileData.Length);
+        }
+
+        _udpFileReceiver.Send(Encoding.UTF8.GetBytes(SyncMessage), SyncMessage.Length, _remoteIpEndPoint);
+      }
+      catch (Exception e)
+      {
+        _udpFileReceiver.Close();
+        Console.WriteLine(e.Message);
+        return -1;
       }
 
       return 0;
@@ -99,71 +88,82 @@ namespace Laba6_SPOLKS_Server
 
     private int ReceiveFileData()
     {
-      int filePointer = 0;
-
       var availableToReadSockets = new List<Socket>();
+
+      _udpFileReceiver = new UdpFileClient(LocalPort);
+      InitializeUdpClients();
 
       try
       {
-        for (int i = 0; ; i++)
+        for (int i = 0; ;)
         {
           availableToReadSockets.Clear();
-          availableToReadSockets.AddRange(_udpFileReceiver.Select(r => r.Client));
+          availableToReadSockets.Add(_udpFileReceiver.Client);
 
           Socket.Select(availableToReadSockets, null, null, SelectTimeout);
 
           if (availableToReadSockets.Any() == false)
           {
-            return -1;
-          }
-
-          if (availableToReadSockets.Count == 1 || availableToReadSockets.Count == AvailableClientsAmount)
-          {
-            i = 0;
-          }
-
-          ReceiveFileDetails(availableToReadSockets);
-
-          if (_fileDetails[availableToReadSockets[i]].FileLength > 0)
-          {
-            var udpClient = _udpFileReceiver.First(r => r.Client == availableToReadSockets[i]);
-
-            if (udpClient.ActiveRemoteHost == false)
+            if (_pointsList.Any() == false)
             {
-              udpClient.Connect(_remoteIpEndPoint);
+              return -1;
             }
 
-            if (udpClient.ActiveRemoteHost)
-            {
-              CreateNewFile(availableToReadSockets, i);
+            var sendBytesAmount = _udpFileReceiver.Send(Encoding.UTF8.GetBytes(SyncMessage), SyncMessage.Length, _remoteIpEndPoint);
+          }
 
-              for (int j = 0; _fileStreams[availableToReadSockets[i]].Position < _fileDetails[availableToReadSockets[i]].FileLength && j < WindowSize; j++)
+          ReceiveFileDetails();
+
+          if (_fileDetails[_remoteIpEndPoint].FileLength > 0)
+          {
+              CreateNewFile();
+
+              try
               {
-                try
+                availableToReadSockets.Clear();
+                availableToReadSockets.Add(_udpFileReceiver.Client);
+
+                Socket.Select(availableToReadSockets, null, null, SelectTimeout);
+
+                if (availableToReadSockets.Any())
                 {
-                  var fileDataArray = udpClient.Receive(ref _remoteIpEndPoint);
+                  i++;
+
+                  var fileDataArray = _udpFileReceiver.Receive(ref _remoteIpEndPoint);
 
                   ShowGetBytesCount();
 
-                  _fileStreams[availableToReadSockets[i]].Write(fileDataArray, 0, fileDataArray.Length);
-                  var sendBytesAmount = udpClient.Send(Encoding.UTF8.GetBytes(SyncMessage), SyncMessage.Length);
-                }
-                catch (SocketException e)
-                {
-                  if (e.SocketErrorCode == SocketError.TimedOut && connectionFlag < AvailableClientsAmount)
+                  _fileStreams[_remoteIpEndPoint].Write(fileDataArray, 0, fileDataArray.Length);
+
+                  if (_pointsList.Count > 1)
                   {
-                    UploadFile(udpClient);
-                    i = 0;
-                    continue;
+                    _udpFileReceiver.Close();
+
+                    _udpFileReceiver = new UdpFileClient(LocalPort);
+                    InitializeUdpClients();
+
+                    var sendBytesAmount = _udpFileReceiver.Send(Encoding.UTF8.GetBytes(SyncMessage), SyncMessage.Length, _pointsList[i - 1]);
                   }
-                  else
+
+                  if (i == _pointsList.Count)
                   {
-                    CloseResources();
-                    return -1;
+                    i = 0;
                   }
                 }
               }
-            }
+              catch (SocketException e)
+              {
+                if (e.SocketErrorCode == SocketError.TimedOut && connectionFlag < 3)
+                {
+                  UploadFile();
+                  continue;
+                }
+                else
+                {
+                  CloseResources();
+                  return -1;
+                }
+              }
           }
           else
           {
@@ -196,21 +196,21 @@ namespace Laba6_SPOLKS_Server
       }
     }
 
-    private void CreateNewFile(IList<Socket> availableToReadSockets, int i)
+    private void CreateNewFile()
     {
-      if (_fileStreams.ContainsKey(availableToReadSockets[i]) == false)
+      if (_fileStreams.ContainsKey(_remoteIpEndPoint) == false)
       {
-        var dotIndex = _fileDetails[availableToReadSockets[i]].FileName.IndexOf('.');
-        var fileName = _fileDetails[availableToReadSockets[i]].FileName.Substring(0, dotIndex) + availableToReadSockets[i].GetHashCode() + _fileDetails[availableToReadSockets[i]].FileName.Substring(dotIndex);
-        _fileStreams[availableToReadSockets[i]] = new FileStream(fileName, FileMode.Append, FileAccess.Write);
+        var dotIndex = _fileDetails[_remoteIpEndPoint].FileName.IndexOf('.');
+        var fileName = _fileDetails[_remoteIpEndPoint].FileName.Substring(0, dotIndex) + _remoteIpEndPoint.GetHashCode() + _fileDetails[_remoteIpEndPoint].FileName.Substring(dotIndex);
+        _fileStreams[_remoteIpEndPoint] = new FileStream(fileName, FileMode.Append, FileAccess.Write);
       }
     }
 
-    private void UploadFile(UdpFileClient udpClients)
+    private void UploadFile()
     {
-      udpClients.Connect(_remoteIpEndPoint);
+      _udpFileReceiver.Connect(_remoteIpEndPoint);
 
-      if (udpClients.ActiveRemoteHost)
+      if (_udpFileReceiver.ActiveRemoteHost)
       {
         connectionFlag = 0;
       }
@@ -222,11 +222,7 @@ namespace Laba6_SPOLKS_Server
 
     private void CloseResources()
     {
-      for (int i = 0; i < _socket.Count; i++)
-      {
-        _socket[i].Close();
-        _udpFileReceiver[i].Close();
-      }
+      _udpFileReceiver.Close();
 
       foreach (var stream in _fileStreams)
       {
